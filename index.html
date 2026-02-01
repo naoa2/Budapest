@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>METRICS ANALYZER - ONLINE</title>
+    <!-- ライブラリの読み込み -->
+    <script src="https://unpkg.com"></script>
+    <style>
+        :root { --accent: #4a6da7; --bg: #ffffff; }
+        body { background: var(--bg); color: #333; font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; touch-action: none; }
+        #header-nav { display: flex; background: #eceff1; border-bottom: 1px solid #cfd8dc; }
+        .session-tab { flex: 1; padding: 12px 5px; text-align: center; cursor: pointer; border-bottom: 3px solid transparent; font-weight: bold; font-size: 0.75em; color: #546e7a; }
+        .session-tab.active { background: #fff; border-bottom: 3px solid var(--accent); color: var(--accent); }
+        #work-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; background: #fff; margin: 10px; border: 1px solid #cfd8dc; border-radius: 4px; overflow: hidden; }
+        #output-val { font-size: 3em; font-weight: bold; pointer-events: none; z-index: 5; }
+        #instruction { font-size: 0.9em; color: #78909c; margin-bottom: 10px; }
+        #logs-panel { height: 220px; background: #fafafa; border-top: 1px solid #cfd8dc; padding: 10px; overflow-y: auto; }
+        .log-row { display: flex; justify-content: space-between; border-bottom: 1px solid #eeeeee; padding: 6px 10px; font-size: 0.85em; }
+        .rank-num { font-weight: bold; color: var(--accent); margin-right: 8px; }
+        .node { width: 50px; height: 50px; background: var(--accent); border-radius: 50%; position: absolute; cursor: pointer; border: 3px solid #bbdefb; }
+        #id-display { position: absolute; top: 10px; right: 10px; color: #b0bec5; font-size: 0.7em; z-index: 10; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div id="header-nav">
+    <div class="session-tab" onclick="changeSession('reflex')">反応速度</div>
+    <div class="session-tab" onclick="changeSession('burst')">連打力</div>
+    <div class="session-tab" onclick="changeSession('multi')">マルチ</div>
+    <div class="session-tab" onclick="changeSession('estimate')">時間感</div>
+</div>
+
+<div id="id-display" onclick="editId()">ID: <span id="user-id">?</span></div>
+
+<div id="work-area">
+    <div id="instruction">タップして開始</div>
+    <div id="output-val">READY</div>
+</div>
+
+<div id="logs-panel">
+    <div id="log-list">ランキング読み込み中...</div>
+</div>
+
+<script>
+// --- あなたが取得した専用キーをセット ---
+const DB_URL = 'https://tcbtmngopvzwfsrnbzjz.supabase.co';
+const DB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjYnRtbmdvcHZ6d2Zzcm5iemp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5NDE5MjksImV4cCI6MjA4NTUxNzkyOX0.WciQmMndyK71ao7CCe2LvfhbCl37u0OfkBisN17c';
+
+let _api, currentSession = 'reflex', sessionState = 'IDLE', markTime, valCount = 0, sessionTimer, userId;
+
+function setup() {
+    try {
+        _api = supabase.createClient(DB_URL, DB_KEY);
+    } catch(e) {
+        document.getElementById('log-list').innerText = "接続エラー";
+    }
+    userId = localStorage.getItem('research_id') || "Player" + Math.floor(Math.random()*999);
+    document.getElementById('user-id').innerText = userId;
+    changeSession('reflex');
+}
+
+function changeSession(mode) {
+    clearTimeout(sessionTimer);
+    currentSession = mode; sessionState = 'IDLE';
+    document.querySelectorAll('.session-tab').forEach((t, i) => {
+        t.classList.toggle('active', ['reflex','burst','multi','estimate'][i] === mode);
+    });
+    document.getElementById('work-area').style.background = 'white';
+    document.getElementById('output-val').innerText = 'START';
+    document.getElementById('instruction').innerText = {reflex:'色が変わったらタップ', burst:'4秒間連打', multi:'30秒間ノードを消せ', estimate:'10秒ぴったりでタップ'}[mode];
+    refreshData();
+}
+
+async function saveMetrics(score) {
+    sessionState = 'RESULT';
+    const unit = (currentSession === 'burst' || currentSession === 'multi') ? ' pts' : 's';
+    document.getElementById('output-val').innerText = score.toFixed(3) + unit;
+    
+    if (_api) {
+        // テーブル名は global_ranking である必要があります
+        await _api.from('global_ranking').insert([{ name: userId, score: score, mode: currentSession }]);
+    }
+    refreshData();
+}
+
+async function refreshData() {
+    const logList = document.getElementById('log-list');
+    if (!_api) return;
+
+    const isTimeBased = (currentSession === 'reflex' || currentSession === 'estimate');
+    const { data, error } = await _api
+        .from('global_ranking')
+        .select('name, score')
+        .eq('mode', currentSession)
+        .order('score', { ascending: isTimeBased })
+        .limit(10);
+
+    if (error) {
+        logList.innerHTML = "データ取得に失敗しました。RLS設定を確認してください。";
+        return;
+    }
+
+    logList.innerHTML = `<div style="font-weight:bold; margin-bottom:5px; border-bottom:1px solid #ddd;">TOP 10 Ranking (${currentSession})</div>`;
+    if (data.length === 0) logList.innerHTML += "まだ記録がありません";
+    data.forEach((row, i) => {
+        const unit = isTimeBased ? 's' : ' pts';
+        logList.innerHTML += `<div class="log-row">
+            <span><span class="rank-num">${i+1}</span>${row.name}</span>
+            <span>${row.score.toFixed(3)}${unit}</span>
+        </div>`;
+    });
+}
+
+// 共通ゲームロジック
+function generateNode() {
+    if (sessionState !== 'RUN') return;
+    const area = document.getElementById('work-area');
+    const n = document.createElement('div');
+    n.className = 'node';
+    n.style.left = Math.random() * (area.clientWidth - 60) + 'px';
+    n.style.top = Math.random() * (area.clientHeight - 60) + 'px';
+    n.onpointerdown = (e) => { e.stopPropagation(); valCount++; n.remove(); generateNode(); };
+    area.appendChild(n);
+}
+
+document.getElementById('work-area').onpointerdown = (e) => {
+    if (sessionState === 'IDLE' || sessionState === 'RESULT') {
+        if (currentSession === 'multi') {
+            sessionState = 'RUN'; valCount = 0; document.getElementById('output-val').innerText = '';
+            for(let i=0; i<5; i++) generateNode();
+            sessionTimer = setTimeout(() => { 
+                document.querySelectorAll('.node').forEach(el => el.remove());
+                saveMetrics(valCount); 
+            }, 30000);
+        } else if (currentSession === 'burst') {
+            sessionState = 'RUN'; valCount = 1;
+            sessionTimer = setTimeout(() => saveMetrics(valCount), 4000);
+        } else if (currentSession === 'reflex') {
+            sessionState = 'WAIT'; document.getElementById('output-val').innerText = '待機...';
+            sessionTimer = setTimeout(() => {
+                sessionState = 'RUN'; markTime = Date.now();
+                document.getElementById('work-area').style.background = '#f1f8e9';
+                document.getElementById('output-val').innerText = 'NOW!';
+            }, Math.random() * 3000 + 2000);
+        } else if (currentSession === 'estimate') {
+            sessionState = 'RUN'; markTime = Date.now();
+            document.getElementById('output-val').innerText = '10秒でタップ';
+        }
+    } else if (sessionState === 'RUN') {
+        if (currentSession === 'reflex') saveMetrics((Date.now() - markTime)/1000);
+        if (currentSession === 'burst') { valCount++; document.getElementById('output-val').innerText = valCount; }
+        if (currentSession === 'estimate') saveMetrics(Math.abs(10 - (Date.now() - markTime)/1000));
+    }
+};
+
+function editId() {
+    let n = prompt("名前を入力してください:", userId);
+    if(n) { userId = n; localStorage.setItem('research_id', n); document.getElementById('user-id').innerText = n; }
+}
+
+setup();
+</script>
+</body>
+</html>
